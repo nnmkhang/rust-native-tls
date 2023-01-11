@@ -67,7 +67,6 @@ impl Identity {
     pub fn from_pkcs12(buf: &[u8], pass: &str) -> Result<Identity, Error> {
         let store = PfxImportOptions::new().password(pass).import(buf)?;
         let mut identity = None;
-
         for cert in store.certs() {
             if cert
                 .private_key()
@@ -81,7 +80,7 @@ impl Identity {
             }
         }
 
-        let identity = match identity {
+        let mut identity = match identity {
             Some(identity) => identity,
             None => {
                 return Err(io::Error::new(
@@ -91,6 +90,16 @@ impl Identity {
                 .into());
             }
         };
+        
+        let mut store = CertStore::open_current_user("RustMy").unwrap();
+
+        let existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut store)?;
+        match existing_cert {
+            Some(x) => {
+                identity = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
+            }
+            None => ()
+        }
 
         Ok(Identity { cert: identity })
     }
@@ -138,6 +147,28 @@ impl Identity {
             let certificate = Certificate::from_pem(int_cert)?;
             context = store.add_cert(&certificate.0, CertAdd::Always)?;
         }
+
+
+        // Verify the public key in the certificate matches the private key 
+        match context 
+            .private_key() 
+            .silent(true) 
+            .compare_key(true) 
+            .acquire() { 
+                Err(err) => return Err(Error(err)), 
+                _ => () 
+        } 
+
+        let mut store = CertStore::open_current_user("RustMy").unwrap();
+        let existing_cert = CertStore::find_existing_cert_and_key(&mut context, &mut store)?; 
+        match existing_cert { 
+            // Replace with the existing key 
+            Some(x) => {
+                context = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
+            }
+            None => () 
+        } 
+
         Ok(Identity { cert: context })
     }
 }
