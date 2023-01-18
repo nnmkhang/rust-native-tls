@@ -65,9 +65,8 @@ pub struct Identity {
 
 impl Identity {
     pub fn from_pkcs12(buf: &[u8], pass: &str) -> Result<Identity, Error> {
-        let store = PfxImportOptions::new().password(pass).import(buf)?;
+        let mut store = PfxImportOptions::new().password(pass).import(buf)?;
         let mut identity = None;
-
         for cert in store.certs() {
             if cert
                 .private_key()
@@ -81,7 +80,7 @@ impl Identity {
             }
         }
 
-        let identity = match identity {
+        let mut identity = match identity {
             Some(identity) => identity,
             None => {
                 return Err(io::Error::new(
@@ -91,6 +90,13 @@ impl Identity {
                 .into());
             }
         };
+        
+        let mut rust_store = CertStore::open_current_user("RustMy")?;
+
+        let existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut rust_store)?;
+        if let Some(x) = existing_cert {
+            identity = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
+        }
 
         Ok(Identity { cert: identity })
     }
@@ -138,6 +144,24 @@ impl Identity {
             let certificate = Certificate::from_pem(int_cert)?;
             context = store.add_cert(&certificate.0, CertAdd::Always)?;
         }
+
+
+        // Verify the public key in the certificate matches the private key 
+        if let Err(err) = context
+            .private_key()
+            .silent(true)
+            .compare_key(true)
+            .acquire()
+        {
+            return Err(Error(err));
+        }
+
+        let mut rust_store = CertStore::open_current_user("RustMy")?;
+        let existing_cert = CertStore::find_existing_cert_and_key(&mut context, &mut rust_store)?; 
+        if let Some(x) = existing_cert {
+            context = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
+        }
+        
         Ok(Identity { cert: context })
     }
 }
