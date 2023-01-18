@@ -91,14 +91,11 @@ impl Identity {
             }
         };
         
-        let mut store = CertStore::open_current_user("RustMy").unwrap();
+        let mut store = CertStore::open_current_user("RustMy")?;
 
         let existing_cert = CertStore::find_existing_cert_and_key(&mut identity, &mut store)?;
-        match existing_cert {
-            Some(x) => {
-                identity = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
-            }
-            None => ()
+        if let Some(x) = existing_cert {
+            identity = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
         }
 
         Ok(Identity { cert: identity })
@@ -159,15 +156,12 @@ impl Identity {
                 _ => () 
         } 
 
-        let mut store = CertStore::open_current_user("RustMy").unwrap();
+        let mut store = CertStore::open_current_user("RustMy")?;
         let existing_cert = CertStore::find_existing_cert_and_key(&mut context, &mut store)?; 
-        match existing_cert { 
-            // Replace with the existing key 
-            Some(x) => {
-                context = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
-            }
-            None => () 
-        } 
+        if let Some(x) = existing_cert {
+            context = store.add_cert(&x, CertAdd::ReplaceExistingInheritProperties)?;
+        }
+        
 
         Ok(Identity { cert: context })
     }
