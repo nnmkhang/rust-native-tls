@@ -107,6 +107,7 @@ use std::error;
 use std::fmt;
 use std::io;
 use std::result;
+use std::ffi::OsStr;
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "ios")))]
 #[macro_use]
@@ -188,6 +189,29 @@ impl Identity {
     /// A certificate chain here means a series of PEM encoded certificates concatenated together.
     pub fn from_pkcs8(pem: &[u8], key: &[u8]) -> Result<Identity> {
         let identity = imp::Identity::from_pkcs8(pem, key)?;
+        Ok(Identity(identity))
+    }
+
+    /// Parses a provided os_engine_string and returns an Identity. 
+    /// 
+    /// *** This function is only avaliable on Windows ***
+    /// 
+    /// `pem` is currently an unused variable that is a placeholder for later intergration with OpenSSL
+    /// 
+    /// `name` can be either "ncrypt" or "e_ncrypt" and represents the provider type for the private key
+    /// 
+    /// `os_engine_string` is a string containing information on a cert context that has already been persisted
+    /// `os_engine_string` has two avaliable conventions for finding the cert context:
+    /// 
+    /// file_type: `file`:<file_path.sst>
+    /// ex: r"file:C:\Microsoft.Autopilot.Security\MachineFunctionCerts\CY2TEAP00013459.CY2Test01.sst"
+    /// Note: The `r` is indicating raw_string for creating a valid windows path, an alternative would be to use double `\` for the path
+    /// 
+    /// store_type: <location>:<store_name>:<certificate_hash>
+    /// ex: user:RustMy:3e2e13a694b3ed9e40849a4ab98b2c84d1b714d8
+    /// Note: <location> can be either "user" or "local" and if the provided store_name is not valid, a new CertStore with the store name will be created
+    pub fn from_os_provider(pem: &[u8], provider_name: &OsStr, os_engine_string: &OsStr) -> Result<Identity> {
+        let identity = imp::Identity::from_os_provider(pem, provider_name, os_engine_string)?;
         Ok(Identity(identity))
     }
 }
