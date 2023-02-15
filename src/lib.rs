@@ -209,7 +209,8 @@ impl Identity {
     /// 
     /// store_type: <location>:<store_name>:<certificate_hash>
     /// ex: user:RustMy:3e2e13a694b3ed9e40849a4ab98b2c84d1b714d8
-    /// Note: <location> can be either "user" or "local" and if the provided store_name is not valid, a new CertStore with the store name will be created
+    /// Note: <location> can be either "user" or "machine" and if the provided <store_name> is not an existing store,
+    /// a new store is created with the provided store_name, it will be empty and from_os_provider will always fail
     pub fn from_os_provider(pem: &[u8], provider_name: &OsStr, os_engine_string: &OsStr) -> Result<Identity> {
         let identity = imp::Identity::from_os_provider(pem, provider_name, os_engine_string)?;
         Ok(Identity(identity))
