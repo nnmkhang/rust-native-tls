@@ -269,8 +269,12 @@ fn parse_engine_string(engine_string: &OsStr) -> io::Result<OsProviderParameters
             };
             return Ok(context_from_store);
         }
+
+        else {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,"Expecting file, user or machine").into());
+        }
     }
-    return Err(io::Error::new(io::ErrorKind::InvalidInput,"Expecting file, user or machine").into())
+    return Err(io::Error::new(io::ErrorKind::InvalidInput,"Invalid String").into())
 }
 
 #[derive(Clone)]
@@ -740,6 +744,10 @@ mod tests{
         // Too many ":", invalid os_engine_string
         let my_os_str = OsStr::new("user:my:7b78a8e15d5ddfc:caa71088ee44606981bb804d7");
         assert!(parse_engine_string(my_os_str).is_err());
+
+        // Invalid string
+        let my_os_str = OsStr::new("woof");
+        assert!(parse_engine_string(my_os_str).is_err());
     }
 
     #[test]
@@ -856,7 +864,7 @@ mod tests{
 
 
         // Invalid SST file, no leaf cert and associated key
-        let _result = CertContext::delete_cert_and_key(identity);
+        let _result = identity.delete_cert_and_key().unwrap();
         CertStore::create_sst(&file_name, &mut memory_store).unwrap();
         assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
 
