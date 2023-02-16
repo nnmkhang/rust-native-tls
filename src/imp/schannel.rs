@@ -246,29 +246,28 @@ fn parse_engine_string(engine_string: &OsStr) -> io::Result<OsProviderParameters
     };
 
     if let Some((first, second)) = converted_str.split_once(":") {
-    let first = first.trim();
+        let first = first.trim();
+        if first == "file" {
+            let path = PathBuf::from(second.trim());
+            let context_from_file = OsProviderParameters::ContextFromFile { file_path: path };  
+            return Ok(context_from_file); 
+        } 
 
-    if first == "file" {
-        let path = PathBuf::from(second.trim());
-        let context_from_file = OsProviderParameters::ContextFromFile { file_path: path };  
-        return Ok(context_from_file); 
-    } 
+        if first == "user" || first == "machine" {
+            let parts: Vec<&str> = second.split(':').map(str::trim).collect();
+            if parts.len() != 2 {
+                return Err(io::Error::new(io::ErrorKind::InvalidInput,"Missing store name and/or certificate thumbprint").into())
+            }            
 
-    if first == "user" || first == "machine" {
-        let parts: Vec<&str> = second.split(':').map(str::trim).collect();
-        if parts.len() != 2 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,"Missing store name and/or certificate thumbprint").into())
-        }            
-
-        let decoded_hex = hex::decode(parts[1].to_string())
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput,"Hex decode failed"))?;
-        
-        let context_from_store = OsProviderParameters::ContextFromStore {
-            is_machine: if first == "machine" {true} else {false},
-            store_name: parts[0].to_string(),
-            decoded_hex: decoded_hex
-        };
-        return Ok(context_from_store);
+            let decoded_hex = hex::decode(parts[1].to_string())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput,"Hex decode failed"))?;
+            
+            let context_from_store = OsProviderParameters::ContextFromStore {
+                is_machine: if first == "machine" {true} else {false},
+                store_name: parts[0].to_string(),
+                decoded_hex: decoded_hex
+            };
+            return Ok(context_from_store);
         }
     }
     return Err(io::Error::new(io::ErrorKind::InvalidInput,"Expecting file, user or machine").into())
@@ -728,8 +727,13 @@ mod tests{
         assert!(parse_engine_string(my_os_str).is_err());
         
 
-        // Hex decode failure
+        // Hex decode failure without ASCII hex characters
         let my_os_str = OsStr::new("user:my:thishashistooshort");
+        assert!(parse_engine_string(my_os_str).is_err());
+
+
+        // Hex decode failure with ASCII hex characters
+        let my_os_str = OsStr::new("user:my:7b78a8e15d5ddfcca");
         assert!(parse_engine_string(my_os_str).is_err());
 
 
@@ -786,12 +790,12 @@ mod tests{
 
 
         // Invalid hash find
-        let my_os_str = OsStr::new("user:RustTestMy:We2e13a694b3ed9e40849a4ab98b2c84d1b714d8");
+        let my_os_str = OsStr::new("user:RustTestMy:ee2e13a694b3ed9e40849a4ab98b2c84d1b714d8");
         assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
 
 
         // Invalid length
-        let my_os_str = OsStr::new("user:RustTestMy:We2e13a694b3ed9e40849a4ab98b2c84d1b714d81111");
+        let my_os_str = OsStr::new("user:RustTestMy:ee2e13a694b3ed9e40849a4ab98b2c84d1b714d888888");
         assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
 
 
@@ -822,11 +826,11 @@ mod tests{
             .import(pfx_file)
             .unwrap();
 
-        let dir = env::temp_dir().join("rust_test_my.sst");
-        let os_str = format!(r"file:{}", dir.to_str().unwrap());     
+        let file_name = env::temp_dir().join("rust_test_my.sst");
+        let os_str = format!(r"file:{}", file_name.to_str().unwrap());     
         let my_os_str = OsStr::new(os_str.as_str());
 
-        CertStore::create_sst(&dir, &mut memory_store).unwrap();
+        CertStore::create_sst(&file_name, &mut memory_store).unwrap();
 
         let mut identity = None;
         for cert in memory_store.certs() {
@@ -852,8 +856,8 @@ mod tests{
 
 
         // Invalid SST file, no leaf cert and associated key
-        let _result = CertStore::delete_cert_and_key(identity);
-        CertStore::create_sst(&dir, &mut memory_store).unwrap();
+        let _result = CertContext::delete_cert_and_key(identity);
+        CertStore::create_sst(&file_name, &mut memory_store).unwrap();
         assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
 
 
@@ -862,6 +866,6 @@ mod tests{
 
 
         // Clean up SST file
-        fs::remove_file(dir).unwrap();
+        fs::remove_file(file_name).unwrap();
     }
 }
