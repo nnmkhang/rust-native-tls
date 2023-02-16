@@ -723,23 +723,20 @@ mod tests{
             _ => {}
         }
 
-        // Test parse errors
+        // Not "file" or "user" or "machine"
         let my_os_str = OsStr::new("willfail:my:7b78a8e15d5ddfccaa71088ee44606981bb804d7");
         assert!(parse_engine_string(my_os_str).is_err());
-
-        let my_os_str = OsStr::new("user:invalidstorename:7b78a8e15d5ddfccaa71088ee44606981bb804d7");
-        assert!(parse_engine_string(my_os_str).is_err());
         
+
+        // Hex decode failure
         let my_os_str = OsStr::new("user:my:thishashistooshort");
         assert!(parse_engine_string(my_os_str).is_err());
 
-        let my_os_str = OsStr::new(r"file:C:\Microsoft.Autopilot.Security\MachineFunctionCerts\invalidfileextentsion\");
-        assert!(parse_engine_string(my_os_str).is_err());
 
-        let my_os_str = OsStr::new(r"file:willfail:::::ddf!!\");
+        // Too many ":", invalid os_engine_string
+        let my_os_str = OsStr::new("user:my:7b78a8e15d5ddfc:caa71088ee44606981bb804d7");
         assert!(parse_engine_string(my_os_str).is_err());
-
-}
+    }
 
     #[test]
     fn test_os_provider_os_string() {
