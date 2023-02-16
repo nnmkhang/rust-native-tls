@@ -269,10 +269,7 @@ fn parse_engine_string(engine_string: &OsStr) -> io::Result<OsProviderParameters
             };
             return Ok(context_from_store);
         }
-
-        else {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput,"Expecting file, user or machine").into());
-        }
+        return Err(io::Error::new(io::ErrorKind::InvalidInput,"Expecting file, user or machine").into());
     }
     return Err(io::Error::new(io::ErrorKind::InvalidInput,"Invalid String").into())
 }
@@ -808,13 +805,13 @@ mod tests{
 
 
         // No associated key
-        let _result  = CertContext::delete_key_container(&mut identity).unwrap();
+        let _result  = identity.delete_key_container().unwrap();
         let my_os_str = OsStr::new("user:RustTestMy:3e2e13a694b3ed9e40849a4ab98b2c84d1b714d8");
         assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
         
 
         // Clean up cert and store
-        let _result = CertContext::delete(identity).unwrap();
+        let _result = identity.delete().unwrap();
         let _result = CertStore::delete_current_user_store("RustTestMy").unwrap();
 
 
