@@ -184,6 +184,10 @@ impl Identity {
         let chain = cert_chain.collect();
         Ok(Identity { pkey, cert, chain })
     }
+
+    pub fn from_os_provider(_: &[u8], _: &OsStr, _: &OsStr) -> Result<Identity> {
+        panic!("Not implemented on openssl");
+    }
 }
 
 #[derive(Clone)]

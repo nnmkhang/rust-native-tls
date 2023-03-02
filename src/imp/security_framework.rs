@@ -148,6 +148,11 @@ impl Identity {
         })
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn from_os_provider(_: &[u8], _: &OsStr, _: &OsStr) -> Result<Identity> {
+        panic!("Not implemented on iOS");
+    }
+
     #[cfg(not(target_os = "ios"))]
     fn import_options(buf: &[u8], pass: &str) -> Result<Vec<ImportedIdentity>, Error> {
         SET_AT_EXIT.call_once(|| {

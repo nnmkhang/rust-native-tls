@@ -6,8 +6,10 @@ use self::schannel::crypt_prov::{AcquireOptions, ProviderType};
 use self::schannel::schannel_cred::{Direction, Protocol, SchannelCred};
 use self::schannel::tls_stream;
 use std::error;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io;
+use std::path::PathBuf;
 use std::str;
 
 use {TlsAcceptorBuilder, TlsConnectorBuilder};
@@ -61,6 +63,18 @@ impl From<io::Error> for Error {
 #[derive(Clone)]
 pub struct Identity {
     cert: CertContext,
+}
+
+// used for the from_os_provider function
+enum OsProviderParameters {
+    ContextFromStore {
+        store_name: String,
+        is_machine: bool,
+        decoded_hex: Vec<u8>,
+    },
+    ContextFromFile {
+        file_path: PathBuf,
+    },
 }
 
 impl Identity {
@@ -140,6 +154,110 @@ impl Identity {
         }
         Ok(Identity { cert: context })
     }
+
+    pub fn from_os_provider(
+        _pem: &[u8],
+        provider_name: &OsStr,
+        os_engine_string: &OsStr,
+    ) -> Result<Identity, Error> {
+        const SHA1_LENGTH: usize = 20;
+        const SHA256_LENGTH: usize = 32;
+        if provider_name != "ncrypt" && provider_name != "e_ncrypt" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "`provider_name` must be either ncrypt or e_ncypt",
+            )
+            .into());
+        }
+
+        let os_provider = parse_engine_string(os_engine_string).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidInput, "Invalid `os_engine_string`")
+        })?;
+
+        match os_provider {
+            OsProviderParameters::ContextFromStore {
+                store_name,
+                is_machine,
+                decoded_hex,
+            } => {
+                let store = if is_machine {
+                    CertStore::open_local_machine(&store_name)
+                } else {
+                    CertStore::open_current_user(&store_name)
+                }?;
+                let mut identity = None;
+
+                for cert in store.certs() {
+                    let algo = match decoded_hex.len() {
+                        SHA1_LENGTH => HashAlgorithm::sha1(),
+                        SHA256_LENGTH => HashAlgorithm::sha256(),
+                        _ => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Invalid hex thumbprint",
+                            )
+                            .into())
+                        }
+                    };
+
+                    let hash = cert.fingerprint(algo)?;
+                    if hash == decoded_hex {
+                        if cert
+                            .private_key()
+                            .silent(true)
+                            .compare_key(true)
+                            .acquire()
+                            .is_err()
+                        {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Missing or invalid private key property",
+                            )
+                            .into());
+                        }
+                        identity = Some(cert);
+                        break;
+                    }
+                }
+
+                let identity = identity.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "No identity found in provided store",
+                    )
+                })?;
+
+                let mut store = Memory::new()?.into_store(); // Adding to memory store to close registry store
+                let identity = store.add_cert(&identity, CertAdd::Always)?;
+                Ok(Identity { cert: identity })
+            }
+
+            OsProviderParameters::ContextFromFile { file_path } => {
+                let store = CertStore::open_file(&file_path.as_path())?;
+                // set identity to the cert that matches the key inside the pfx file
+                let mut identity = None;
+                for cert in store.certs() {
+                    if cert
+                        .private_key()
+                        .silent(true)
+                        .compare_key(true)
+                        .acquire()
+                        .is_ok()
+                    {
+                        identity = Some(cert);
+                        break;
+                    }
+                }
+                let identity = identity.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "No identity found in provided file",
+                    )
+                })?;
+                Ok(Identity { cert: identity })
+            }
+        }
+    }
 }
 
 // The name of the container must be unique to have multiple active keys.
@@ -147,6 +265,59 @@ fn gen_container_name() -> String {
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
     format!("native-tls-{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+fn parse_engine_string(engine_string: &OsStr) -> io::Result<OsProviderParameters> {
+    let converted_str = engine_string.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Contains invalid UTF-8 characters",
+        )
+    })?;
+
+    match converted_str.split_once(":") {
+        Some((first, second)) => {
+            let first = first.trim();
+            match first {
+                "file" => {
+                    let path = PathBuf::from(second.trim());
+                    let context_from_file =
+                        OsProviderParameters::ContextFromFile { file_path: path };
+                    return Ok(context_from_file);
+                }
+                "user" | "machine" => {
+                    let parts: Vec<&str> = second.split(':').map(str::trim).collect();
+                    if parts.len() != 2 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Missing store name and/or certificate thumbprint",
+                        )
+                        .into());
+                    }
+
+                    let decoded_hex = hex::decode(parts[1].to_string()).map_err(|_| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "Hex decode failed")
+                    })?;
+
+                    return Ok(OsProviderParameters::ContextFromStore {
+                        is_machine: first == "machine",
+                        store_name: parts[0].to_string(),
+                        decoded_hex,
+                    });
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Expecting file, user or machine",
+                    )
+                    .into());
+                }
+            }
+        }
+        None => {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid String").into());
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -472,10 +643,17 @@ mod pem {
             return Some(&self.pem_block[begin..self.cur_end].as_bytes());
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{env, fs};
 
     #[test]
     fn test_split() {
         // Split three certs, CRLF line terminators.
+        use imp::pem::PemBlock;
         assert_eq!(
             PemBlock::new(
                 b"-----BEGIN FIRST-----\r\n-----END FIRST-----\r\n\
@@ -558,5 +736,230 @@ mod pem {
             PemBlock::new(b"junk-----BEGIN garbage").collect::<Vec<&[u8]>>(),
             vec![b"-----BEGIN garbage" as &[u8]]
         );
+    }
+
+    #[test]
+    fn test_parse_engine_string() {
+        let my_os_str = OsStr::new("user:my:7b78a8e15d5ddfccaa71088ee44606981bb804d7");
+        let my_file_str = OsStr::new(
+            r"file:C:\Microsoft.Autopilot.Security\MachineFunctionCerts\CY2TEAP00013459.CY2Test01.sst",
+        );
+        let file_result = parse_engine_string(my_file_str).unwrap();
+        let os_result = parse_engine_string(my_os_str).unwrap();
+
+        // Verify file parse
+        assert!(matches!(
+            file_result,
+            OsProviderParameters::ContextFromFile { .. }
+        ));
+
+        if let OsProviderParameters::ContextFromFile { file_path } = file_result {
+            assert_eq!(
+                file_path.as_os_str(),
+                r"C:\Microsoft.Autopilot.Security\MachineFunctionCerts\CY2TEAP00013459.CY2Test01.sst"
+            );
+        }
+
+        // Verify store parse
+        assert!(matches!(
+            os_result,
+            OsProviderParameters::ContextFromStore { .. }
+        ));
+
+        if let OsProviderParameters::ContextFromStore {
+            store_name,
+            is_machine,
+            decoded_hex,
+        } = os_result
+        {
+            let expected_hex = hex::decode("7b78a8e15d5ddfccaa71088ee44606981bb804d7").unwrap();
+            assert_eq!(false, is_machine);
+            assert_eq!(store_name, "my".to_string());
+            assert_eq!(expected_hex, decoded_hex)
+        }
+
+        // Not "file" or "user" or "machine"
+        let my_os_str = OsStr::new("willfail:my:7b78a8e15d5ddfccaa71088ee44606981bb804d7");
+        assert!(parse_engine_string(my_os_str).is_err());
+
+        // Hex decode failure without ASCII hex characters
+        let my_os_str = OsStr::new("user:my:thishashistooshort");
+        assert!(parse_engine_string(my_os_str).is_err());
+
+        // Hex decode failure with ASCII hex characters
+        let my_os_str = OsStr::new("user:my:7b78a8e15d5ddfcca");
+        assert!(parse_engine_string(my_os_str).is_err());
+
+        // Too many ":", invalid os_engine_string
+        let my_os_str = OsStr::new("user:my:7b78a8e15d5ddfc:caa71088ee44606981bb804d7");
+        assert!(parse_engine_string(my_os_str).is_err());
+
+        // Invalid string
+        let my_os_str = OsStr::new("woof");
+        assert!(parse_engine_string(my_os_str).is_err());
+    }
+
+    #[test]
+    fn test_os_provider_os_string() {
+        let unused_pem: [u8; 0] = [];
+        let pfx_file = include_bytes!("../test/playserver_openssl2.pfx");
+        let memory_store = PfxImportOptions::new()
+            .include_extended_properties(true)
+            .password("openssl")
+            .import(pfx_file)
+            .unwrap();
+
+        let mut identity = None;
+        for cert in memory_store.certs() {
+            if cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok()
+            {
+                identity = Some(cert);
+                break;
+            }
+        }
+
+        let mut identity = identity.unwrap();
+
+        let mut store = CertStore::open_current_user("RustTestMy").unwrap();
+        for cert in memory_store.certs() {
+            store.add_cert(&cert, CertAdd::Always).unwrap();
+        }
+
+        // SHA1 hash find
+        let my_os_str = OsStr::new("user:RustTestMy:3e2e13a694b3ed9e40849a4ab98b2c84d1b714d8");
+        let os_identity =
+            Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).unwrap();
+
+        assert_eq!(
+            os_identity
+                .cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok(),
+            true
+        );
+        assert_eq!(
+            identity.fingerprint(HashAlgorithm::sha256()).unwrap(),
+            os_identity
+                .cert
+                .fingerprint(HashAlgorithm::sha256())
+                .unwrap()
+        );
+
+        // SHA256 hash find
+        let my_os_str = OsStr::new(
+            "user:RustTestMy:42fdc4c8c3a3f768d27acaedcf1d8b26a112cffa9510713fe9c6fa7dc71ffc6f",
+        );
+        let os_identity =
+            Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).unwrap();
+
+        assert_eq!(
+            os_identity
+                .cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok(),
+            true
+        );
+        assert_eq!(
+            identity.fingerprint(HashAlgorithm::sha256()).unwrap(),
+            os_identity
+                .cert
+                .fingerprint(HashAlgorithm::sha256())
+                .unwrap()
+        );
+
+        // Invalid hash find
+        let my_os_str = OsStr::new("user:RustTestMy:ee2e13a694b3ed9e40849a4ab98b2c84d1b714d8");
+        assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
+
+        // Invalid length
+        let my_os_str = OsStr::new("user:RustTestMy:ee2e13a694b3ed9e40849a4ab98b2c84d1b714d888888");
+        assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
+
+        // No associated key
+        let _result = identity.delete_key_container().unwrap();
+        let my_os_str = OsStr::new("user:RustTestMy:3e2e13a694b3ed9e40849a4ab98b2c84d1b714d8");
+        assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
+
+        // Clean up cert and store
+        identity.delete().unwrap();
+        CertStore::delete_current_user_store("RustTestMy").unwrap();
+    }
+
+    #[test]
+    fn test_os_provider_sst_file() {
+        let unused_pem: [u8; 0] = [];
+        let pfx_file = include_bytes!("../test/playserver_openssl2.pfx");
+        let mut memory_store = PfxImportOptions::new()
+            .include_extended_properties(true)
+            .password("openssl")
+            .import(pfx_file)
+            .unwrap();
+
+        let file_name = env::temp_dir().join("rust_test_my.sst");
+        let os_str = format!("file:{}", file_name.to_str().unwrap());
+        let my_os_str = OsStr::new(os_str.as_str());
+
+        CertStore::create_sst(&file_name, &mut memory_store).unwrap();
+
+        let mut identity = None;
+        for cert in memory_store.certs() {
+            if cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok()
+            {
+                identity = Some(cert);
+                break;
+            }
+        }
+        let identity = identity.unwrap();
+
+        // Valid SST file, working case
+        let os_identity =
+            Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).unwrap();
+
+        assert_eq!(
+            os_identity
+                .cert
+                .private_key()
+                .silent(true)
+                .compare_key(true)
+                .acquire()
+                .is_ok(),
+            true
+        );
+        assert_eq!(
+            identity.fingerprint(HashAlgorithm::sha256()).unwrap(),
+            os_identity
+                .cert
+                .fingerprint(HashAlgorithm::sha256())
+                .unwrap()
+        );
+
+        // Invalid SST file, no leaf cert and associated key
+        let _result = identity.delete_cert_and_key().unwrap();
+        CertStore::create_sst(&file_name, &mut memory_store).unwrap();
+        assert!(Identity::from_os_provider(&unused_pem, OsStr::new("ncrypt"), my_os_str).is_err());
+
+        // Provider is neither "ncrypt" nor "e_ncrypt"
+        assert!(
+            Identity::from_os_provider(&unused_pem, OsStr::new("willfail"), my_os_str).is_err()
+        );
+
+        // Clean up SST file
+        fs::remove_file(file_name).unwrap();
     }
 }
